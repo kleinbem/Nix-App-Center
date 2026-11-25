@@ -1,0 +1,492 @@
+/* Nix App Center stylesheet.
+ *
+ * Blocks marked "← gnome-software src/style.css:N" are ported verbatim from
+ * the clone. Do not reformat them: a `diff` against the source must stay readable.
+ *
+ * Only systematic adaptation: GNOME targets NODE names (`app-context-bar`,
+ * `screenshot-carousel`) declared by its custom GObjects. Nix App Center has no GTK
+ * subclasses, so it uses equivalent style CLASSES (`.app-context-bar`).
+ */
+
+/* Packaging color. GNOME declares `@define-color flatpak_packaging_color @blue_4;`
+ * (style.css:1) then applies it in code to the origin icon, the "verified" icon
+ * and its label (gs-details-page.c:299-306). Same mechanism, nixpkgs source. */
+@define-color nix_packaging_color @blue_4;
+.nix-packaging-color { color: @nix_packaging_color; }
+
+
+/* ══ Details page ═════════════════════════════════════════════════════════ */
+
+/* ← style.css:3 */
+.details-page {
+	margin: 24px 0px;
+}
+
+/* ← style.css:486-492 */
+window.narrow .app-title {
+	font-size: 16pt;
+}
+
+window.narrow .app-developer {
+	font-size: small;
+}
+
+/* ← style.css:71 */
+.origin-button > button { padding: 2px 8px; }
+
+
+/* ══ Screenshot carousel (GsScreenshotCarousel) ════════════════════════════ */
+
+/* ← style.css:15-22. `.view` already provides @view_bg_color; only the 1px
+   top/bottom border is kept, without rounding, for the full width rendering. */
+.screenshot-carousel.frame {
+	border-width: 1px 0;
+	border-radius: 0;
+}
+
+.screenshot-carousel button.osd { margin: 12px; }
+
+/* Clickable screenshots: button without chrome or padding (Nix App Center addition). */
+button.screenshot-button { padding: 0; }
+
+/* Lightbox (Nix App Center addition): dark full screen layer, centered frameless image. */
+button.lightbox {
+	background-color: rgba(0, 0, 0, 0.85);
+	background-image: none;
+	border: none;
+	border-radius: 0;
+	box-shadow: none;
+	padding: 0;
+}
+button.lightbox:hover { background-color: rgba(0, 0, 0, 0.85); }
+
+
+/* ══ Context bar (GsAppContextBar) ═════════════════════════════════════════ */
+
+/* ← style.css:371-421. The container also carries `.card` (rounded frame +
+   background) and holds TWO sub-boxes of 2 tiles. Tiles only have a LEFT
+   border = inner separators, the frame comes from the card. */
+.app-context-bar .context-tile {
+	border: 1px solid @card_shade_color;
+	background-color: transparent;
+	border-radius: 0;
+	padding: 24px 12px 21px 12px;
+	outline-offset: 5px;
+	border-top: none;
+	border-bottom: none;
+	border-right: none;
+}
+.app-context-bar .context-tile:hover {
+	background-image: image(alpha(currentColor, .03));
+}
+.app-context-bar .context-tile.keyboard-activating,
+.app-context-bar .context-tile:active {
+	background-image: image(alpha(currentColor, .08));
+}
+.app-context-bar .context-tile:focus:focus-visible {
+	outline-offset: -1px;
+}
+.app-context-bar box:first-child .context-tile:first-child {
+	border-top-left-radius: 12px;
+	border-bottom-left-radius: 12px;
+	border-left: none;
+}
+.app-context-bar box:last-child .context-tile:last-child {
+	border-top-right-radius: 12px;
+	border-bottom-right-radius: 12px;
+}
+
+
+/* ══ Lozenge (GsLozenge) ═══════════════════════════════════════════════════ */
+
+/* ← style.css:423-484. `.details-rating-N` aliases are those of the age tile. */
+.context-tile-lozenge {
+	font-size: 18px;
+	font-weight: bold;
+	border-radius: 99999px;
+	padding: 9px 11px;
+	min-width: 18px;   /* 40px minus left/right padding */
+	min-height: 22px;  /* 40px minus top/bottom padding */
+}
+
+.context-tile-lozenge.large {
+	font-size: 24px;
+	padding: 15px 18px;
+	min-width: 24px;
+	min-height: 30px;
+}
+
+/* GtkImage always renders a square: a wide image of the same height as the
+   others gets zero height and is vertically centered. */
+.context-tile-lozenge.wide-image image {
+	margin-top: -28px;
+	margin-bottom: -28px;
+}
+
+.context-tile-lozenge image { -gtk-icon-style: symbolic; }
+
+.context-tile-lozenge.grey {
+	color: alpha(@window_fg_color, .75);
+	background-color: alpha(@window_fg_color, .15);
+}
+
+.context-tile-lozenge.green,
+.context-tile-lozenge.details-rating-0 {
+	color: @green_5;
+	background-color: alpha(@green_3, .25);
+}
+
+.context-tile-lozenge.blue,
+.context-tile-lozenge.details-rating-5 {
+	color: @blue_4;
+	background-color: alpha(@blue_3, .25);
+}
+
+.context-tile-lozenge.yellow,
+.context-tile-lozenge.details-rating-12 {
+	color: #ae7b03;
+	background: alpha(@yellow_5, .25);
+}
+
+.context-tile-lozenge.orange,
+.context-tile-lozenge.details-rating-15 {
+	color: @orange_5;
+	background-color: alpha(@orange_4, .25);
+}
+
+.context-tile-lozenge.red,
+.context-tile-lozenge.details-rating-18 {
+	color: @red_4;
+	background-color: alpha(@red_2, .25);
+}
+
+
+/* ══ Infobars (.card .infobox) ═════════════════════════════════════════════ */
+
+/* ← style.css:195-208 */
+.card.info {
+	background-color: mix(@accent_bg_color, @window_bg_color, .7);
+	color: @window_fg_color;
+}
+
+.card.warning {
+	background-color: mix(@warning_bg_color, @window_bg_color, .7);
+	color: @window_fg_color;
+}
+
+.infobox {
+	border-spacing: 6px;
+	padding: 12px;
+}
+
+
+/* ══ Version history (GsAppVersionHistoryRow) ═════════════════════════════ */
+
+/* GNOME border-spacing of `.history-row-header`. */
+box.history-row-header { border-spacing: 12px 6px; }
+
+/* ← style.css (Adwaita): "In nixpkgs" badge of the version row. */
+.installed-badge {
+	font-size: smaller;
+	background-color: @accent_bg_color;
+	color: @accent_fg_color;
+	border-radius: 6px;
+	padding: 1px 6px;
+}
+
+
+/* ══ Reviews (GsReviewHistogram, GsReviewRow) ═════════════════════════════ */
+
+/* ← style.css:231-235 */
+.review-row > * {
+	margin: 12px;
+}
+
+.review-row button { font-size: smaller; }
+
+/* GsReviewBar: thin, rounded bar, tinted with the text color. */
+.review-histogram-bar > trough,
+.review-histogram-bar > trough > progress {
+	min-height: 6px;
+	border-radius: 3px;
+}
+.review-histogram-bar > trough {
+	background-color: alpha(@window_fg_color, 0.1);
+}
+.review-histogram-bar > trough > progress {
+	background-color: alpha(@window_fg_color, 0.4);
+	background-image: none;
+}
+.review-histogram image.star-on,
+.review-histogram image.star-off { color: alpha(@window_fg_color, 0.4); }
+
+/* Average: the .ui `scale 5.0` + `weight light`, expressed in CSS. */
+.review-average {
+	font-size: 5em;
+	font-weight: 300;
+}
+
+/* GsStarWidget: golden full stars, dimmed empty ones. */
+.app-stars image.star-on  { color: #e5a50a; }
+.app-stars image.star-off { color: alpha(@window_fg_color, 0.3); }
+
+
+/* ══ Category cards (home) ════════════════════════════════════════════════ */
+
+/* ← style.css: .category-tile.category-*, geometry and gradients verbatim. */
+button.category-card {
+	border-radius: 12px;
+	padding: 20px 10px;
+	min-width: 140px;
+	border: none;
+	box-shadow: none;
+	outline-offset: 2px;
+	font-weight: 900;
+	font-size: larger;
+	transition: filter 150ms ease;
+}
+button.category-card label { font-weight: 900; }
+button.category-card:hover { filter: brightness(1.06); }
+
+button.category-create {
+	background: linear-gradient(180deg, #ce8cd7 0%, #2861c6 100%);
+	color: white;
+}
+button.category-develop {
+	background: #5e5c64;
+	color: white;
+}
+button.category-learn {
+	background: linear-gradient(180deg, #2ec27e 30%, #27a66c 100%);
+	color: white;
+}
+button.category-play {
+	background: linear-gradient(75deg, #f9e2a7 0%, #eb5ec3 50%, #6d53e0 100%);
+	color: #393484;
+}
+button.category-socialize {
+	background: linear-gradient(90deg, #ef4e9b 0%, #f77466 100%);
+	color: alpha(black, 0.7);
+}
+button.category-work {
+	color: #1c71d8;
+	background-color: #fdf8d7;
+	background-image: linear-gradient(#deddda 1px, transparent 1px),
+	                  linear-gradient(90deg, #deddda 1px, transparent 1px);
+	background-size: 10px 10px, 10px 10px;
+	background-position: -1px -4px, center -1px;
+}
+
+@media (prefers-color-scheme: dark) {
+	button.category-create {
+		background: linear-gradient(180deg, #9141ac 0%, #2D5AA8 100%);
+	}
+	button.category-develop { background: #4E4C54; }
+	button.category-learn {
+		background: linear-gradient(180deg, #28AA6E 30%, #1E7E52 100%);
+	}
+	button.category-play {
+		background: linear-gradient(75deg, #E9CF90 0%, #C8499C 50%, #4B35BA 100%);
+	}
+	button.category-socialize {
+		background: linear-gradient(90deg, #CC307F 0%, #DD6C62 100%);
+		color: alpha(black, 0.75);
+	}
+	button.category-work {
+		background-color: #ECDDA8;
+		background-image: linear-gradient(#C2C1BE 1px, transparent 1px),
+		                  linear-gradient(90deg, #C2C1BE 1px, transparent 1px);
+	}
+
+	/* ← style.css:584-610: lozenges in dark theme. */
+	.context-tile-lozenge.green,
+	.context-tile-lozenge.details-rating-0 {
+		color: @green_1;
+		background-color: alpha(@green_5, .25);
+	}
+	.context-tile-lozenge.blue,
+	.context-tile-lozenge.details-rating-5 {
+		color: @blue_1;
+		background-color: alpha(@blue_5, .25);
+	}
+	.context-tile-lozenge.yellow,
+	.context-tile-lozenge.details-rating-12 {
+		color: @yellow_2;
+		background-color: alpha(@yellow_5, .25);
+	}
+	.context-tile-lozenge.orange,
+	.context-tile-lozenge.details-rating-15 {
+		color: @orange_1;
+		background-color: alpha(@orange_5, .25);
+	}
+	.context-tile-lozenge.red,
+	.context-tile-lozenge.details-rating-18 {
+		color: @red_1;
+		background-color: alpha(@red_5, .25);
+	}
+}
+
+
+/* ══ Grids, tiles, rows ═══════════════════════════════════════════════════ */
+
+/* GNOME forces this padding to zero on FlowBox children. */
+flowboxchild { padding: 0px; }
+
+/* App tile: slightly larger name, lighter description. */
+label.app-tile-name { font-weight: bold; font-size: 1.1em; }
+label.app-tile-summary { opacity: 0.6; }
+
+
+/* ══ Loading (Nix App Center additions) ═════════════════════════════════════════════ */
+
+/* "Shimmer" placeholder while an icon loads: a gradient sweeping in a loop
+   to hide the fetch. */
+@keyframes icon-shimmer-sweep {
+	0%   { background-position: -150% 0; }
+	100% { background-position: 250% 0; }
+}
+.icon-shimmer, .skeleton {
+	background-color: alpha(@window_fg_color, 0.07);
+	background-image: linear-gradient(100deg,
+		alpha(@window_fg_color, 0.00) 30%,
+		alpha(@window_fg_color, 0.13) 50%,
+		alpha(@window_fg_color, 0.00) 70%);
+	background-size: 200% 100%;
+	background-repeat: no-repeat;
+	animation: icon-shimmer-sweep 1.4s ease-in-out infinite;
+}
+.icon-shimmer { border-radius: 14px; }
+.skeleton.round { border-radius: 9999px; }
+
+/* Appearance: every boxed list row and every grid item of the app fades and
+   rises in, one after the other. Set here, at the root, so no view has to
+   ask for it. GTK skips it when the system turns animations off. */
+/* No "to": each widget ends on its own opacity (dimmed rows stay dimmed). */
+@keyframes nix-app-center-appear {
+	from { opacity: 0; transform: translateY(8px); }
+}
+list.boxed-list > row,
+flowbox > flowboxchild,
+.appear { animation: nix-app-center-appear 320ms cubic-bezier(0.2, 0.7, 0.3, 1) backwards; }
+list.boxed-list > row:nth-child(2), flowbox > flowboxchild:nth-child(2), .appear-1 { animation-delay: 30ms; }
+list.boxed-list > row:nth-child(3), flowbox > flowboxchild:nth-child(3), .appear-2 { animation-delay: 60ms; }
+list.boxed-list > row:nth-child(4), flowbox > flowboxchild:nth-child(4), .appear-3 { animation-delay: 90ms; }
+list.boxed-list > row:nth-child(5), flowbox > flowboxchild:nth-child(5), .appear-4 { animation-delay: 120ms; }
+list.boxed-list > row:nth-child(6), flowbox > flowboxchild:nth-child(6), .appear-5 { animation-delay: 150ms; }
+list.boxed-list > row:nth-child(7), flowbox > flowboxchild:nth-child(7), .appear-6 { animation-delay: 180ms; }
+list.boxed-list > row:nth-child(8), flowbox > flowboxchild:nth-child(8), .appear-7 { animation-delay: 210ms; }
+list.boxed-list > row:nth-child(9), flowbox > flowboxchild:nth-child(9), .appear-8 { animation-delay: 240ms; }
+list.boxed-list > row:nth-child(10), flowbox > flowboxchild:nth-child(10), .appear-9 { animation-delay: 270ms; }
+list.boxed-list > row:nth-child(11), flowbox > flowboxchild:nth-child(11), .appear-10 { animation-delay: 300ms; }
+list.boxed-list > row:nth-child(12), flowbox > flowboxchild:nth-child(12), .appear-11 { animation-delay: 330ms; }
+list.boxed-list > row:nth-child(n+13), flowbox > flowboxchild:nth-child(n+13) { animation-delay: 360ms; }
+.settled list.boxed-list > row,
+.settled flowbox > flowboxchild { animation: none; }
+.skeleton { border-radius: 7px; }
+.skeleton.large { border-radius: 12px; }
+
+/* Fallback icon (package without AppStream): one flat color and one white
+   glyph per family of package. Most nixpkgs packages have no icon. */
+.fallback-tile { border-radius: 14px; }
+.fallback-tile.small { border-radius: 8px; }
+.fallback-glyph { color: #ffffff; }
+.kind-game        { background: #9141ac; }
+.kind-audio       { background: #e66100; }
+.kind-video       { background: #e01b24; }
+.kind-graphics    { background: #c061cb; }
+.kind-office      { background: #3584e4; }
+.kind-development { background: #5e5c64; }
+.kind-terminal    { background: #3d3846; }
+.kind-internet    { background: #2190a4; }
+.kind-security    { background: #26a269; }
+.kind-science     { background: #0e8074; }
+.kind-education   { background: #c88a00; }
+.kind-system      { background: #77767b; }
+.kind-font        { background: #865e3c; }
+.kind-theme       { background: #e5a50a; }
+.kind-library     { background: #613583; }
+.kind-generic     { background: #62a0ea; }
+
+
+/* ══ Featured carousel (home) ═════════════════════════════════════════════ */
+
+button.carousel-slide {
+	all: unset;
+	padding: 24px;
+}
+button.carousel-slide label { color: white; }
+button.carousel-slide-0 { background: linear-gradient(135deg, #1b6ac9, #613583); }
+button.carousel-slide-1 { background: linear-gradient(135deg, #c01c28, #e66100); }
+button.carousel-slide-2 { background: linear-gradient(135deg, #2ec27e, #1a5fb4); }
+button.carousel-slide-3 { background: linear-gradient(135deg, #9141ac, #1c71d8); }
+button.carousel-slide-4 { background: linear-gradient(135deg, #e5a50a, #c01c28); }
+button.carousel-slide-5 { background: linear-gradient(135deg, #613583, #1b6ac9); }
+
+@keyframes welcome-pop {
+  from { opacity: 0; transform: scale(0.6); }
+}
+@keyframes welcome-rise {
+  from { opacity: 0; transform: translateY(18px); }
+}
+.welcome-icon { color: @accent_color; }
+.welcome-page:not(.welcome-active) > * { opacity: 0; }
+.welcome-active .welcome-icon { animation: welcome-pop 560ms cubic-bezier(0.2, 0.9, 0.3, 1.25) backwards; }
+.welcome-active .welcome-title { animation: welcome-rise 440ms 120ms cubic-bezier(0.2, 0.7, 0.3, 1) backwards; }
+.welcome-active .welcome-body { animation: welcome-rise 440ms 220ms cubic-bezier(0.2, 0.7, 0.3, 1) backwards; }
+.welcome-active .welcome-extra { animation: welcome-rise 440ms 320ms cubic-bezier(0.2, 0.7, 0.3, 1) backwards; }
+
+.installed-pill {
+	background-color: alpha(@window_fg_color, .08);
+	border-radius: 9999px;
+	padding: 0 12px 0 0;
+}
+
+.installed-check {
+	background-color: alpha(@window_fg_color, .16);
+	color: @success_color;
+	border-radius: 9999px;
+	padding: 4px;
+}
+
+.large > .installed-pill {
+	padding: 4px 14px 4px 4px;
+}
+
+.large .installed-check { padding: 5px; }
+
+.installed-kind { color: alpha(@window_fg_color, .8); }
+
+button.app-tile { padding: 0; }
+
+.installed-pill.corner {
+	background-color: alpha(@window_fg_color, .05);
+	padding: 3px 10px 3px 3px;
+}
+
+.beta-badge {
+	font-size: smaller;
+	font-weight: bold;
+	color: mix(@orange_4, @window_fg_color, .3);
+	background-color: alpha(@orange_3, .2);
+	border-radius: 6px;
+	padding: 2px 8px;
+}
+
+.action-group > menubutton,
+.action-group > menubutton.suggested-action > button.toggle,
+.action-group menubutton button {
+	border-top-left-radius: 0;
+	border-bottom-left-radius: 0;
+	box-shadow: inset 1px 0 alpha(@accent_fg_color, .25);
+}
+
+.action-group > button:not(:first-child) {
+	border-top-left-radius: 0;
+	border-bottom-left-radius: 0;
+	box-shadow: inset 1px 0 alpha(@accent_fg_color, .25);
+}
+
+.action-group > button:not(:last-child) {
+	border-top-right-radius: 0;
+	border-bottom-right-radius: 0;
+}

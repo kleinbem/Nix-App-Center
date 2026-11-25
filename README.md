@@ -1,0 +1,144 @@
+<p align="center">
+  <img src="crates/gui/data/icons/hicolor/scalable/apps/io.github.sptapyo.NixAppCenter.svg" alt="Nix App Center" width="160" />
+</p>
+
+<h1 align="center">Nix App Center</h1>
+
+<p align="center">
+<em>a declarative app store for Nix, built around "try first"</em>
+</p>
+
+<hr/>
+<br/>
+
+<p align="center">
+  <a href="https://github.com/SPTApyo/nix-app-center/actions/workflows/ci.yml"><img alt="Tests" src="https://img.shields.io/github/actions/workflow/status/SPTApyo/nix-app-center/ci.yml?style=flat-square&label=Tests&color=007cf0&labelColor=333333" /></a>
+  <a href="https://github.com/SPTApyo/nix-app-center/releases"><img alt="Version" src="https://img.shields.io/github/v/tag/SPTApyo/nix-app-center?style=flat-square&label=Version&color=7b2ff7&labelColor=333333" /></a>
+  <a href="https://github.com/SPTApyo/nix-app-center/blob/main/LICENSE"><img alt="License" src="https://img.shields.io/github/license/SPTApyo/nix-app-center.svg?style=flat-square&label=License&color=ff0080&labelColor=333333" /></a>
+  <img alt="GTK 4" src="https://img.shields.io/badge/GTK_4-libadwaita-007cf0?style=flat-square&labelColor=333333" />
+  <a href="https://github.com/SPTApyo/nix-app-center/commits/main"><img alt="Updated" src="https://img.shields.io/github/last-commit/SPTApyo/nix-app-center.svg?style=flat-square&label=Updated&color=7b2ff7&labelColor=333333" /></a>
+</p>
+
+**Nix App Center** is a GNOME Software style app store for NixOS and Home Manager. Launch any package from nixpkgs right away, nothing installed. When you want to keep it, Nix App Center adds it to a small Nix module it generates, your configuration imports it, and you apply the usual way. Your own files are only touched after you accept a diff, and a backup is written first.
+
+<p align="center">
+  <img src="data/screenshots/explore.png" alt="Explore, with the installed apps marked" width="720" />
+</p>
+
+<p align="center">
+  <img src="data/screenshots/app.png" alt="An app page" width="360" />
+  <img src="data/screenshots/versions.png" alt="Versions from nixpkgs and unstable" width="360" />
+</p>
+
+<p align="center">
+  <img src="data/screenshots/search.png" alt="Search" width="360" />
+  <img src="data/screenshots/storage.png" alt="Storage" width="360" />
+</p>
+
+## Features
+
+- **Try first**: run any app with nix run, or open a nix shell for command line tools. Unfree packages included.
+- **Keep**: the app goes into two small Nix files Nix App Center owns, imported by your configuration, in your home or for everyone, as a package or through its NixOS or Home Manager module.
+- **Knows your setup**: NixOS with or without flakes, Home Manager as a module or standalone, local and private configuration repositories. Elsewhere, it installs for your user with nix profile.
+- **Sees what is installed**: by your configuration, by Nix App Center, with nix profile or nix-env, as a Flatpak or an AppImage, and removes what it can.
+- **Versions**: hold an app at any version nixpkgs shipped, or take a newer one from unstable.
+- **Search**: packages of nixpkgs and of other flakes, NixOS and Home Manager options you can set, search by command, and results in the GNOME Shell overview.
+- **Rich pages**: Flathub metadata (screenshots, ratings, age ratings) when the app exists there, else [nixsoftware.org](https://nixsoftware.org)'s, reviews, similar apps, build options.
+- **Updates and Storage**: what a nixpkgs update changes for your apps, and where the store space goes, with clean-ups.
+- **Interface in English, French, Spanish, Portuguese (Brazil), Chinese (Simplified), Hindi and Arabic.** Only French is reviewed by a native speaker so far: corrections are welcome.
+
+# Getting Started
+
+Nix App Center requires **Nix with flakes enabled**.
+
+## Installation
+
+Try it without installing:
+
+```bash
+nix run github:SPTApyo/nix-app-center
+```
+
+On NixOS with flakes, add the input and enable the module. It installs the
+app, the GNOME Shell search provider and polkit, which applying needs:
+
+```nix
+# flake.nix
+inputs.nix-app-center.url = "github:SPTApyo/nix-app-center";
+
+# in your NixOS configuration
+imports = [ inputs.nix-app-center.nixosModules.default ];
+programs.nix-app-center.enable = true;
+```
+
+Once Nix App Center is in nixpkgs, programs.nix-app-center.enable = true is
+enough, without the input.
+
+On NixOS without flakes, no channel needed:
+
+```nix
+environment.systemPackages = [
+  (import (builtins.fetchTarball "https://github.com/SPTApyo/nix-app-center/archive/v0.3.0.tar.gz") { inherit pkgs; })
+];
+```
+
+With Home Manager, put the same line in home.packages. For your user only,
+without touching any configuration:
+
+```bash
+nix profile add github:SPTApyo/nix-app-center
+```
+
+GNOME Shell search only works once the app is installed in a profile.
+
+From source:
+
+```bash
+git clone https://github.com/SPTApyo/nix-app-center.git
+cd nix-app-center
+nix build .   # result/bin/nix-app-center and result/bin/nix-app-center-cli
+```
+
+# Usage
+
+New to Nix? The [user guide](docs/user-guide.md) explains how it all works, in plain words. The app also opens a welcome tour on first launch.
+
+Open Nix App Center from your app grid, or run nix-app-center.
+
+A text interface ships next to the app:
+
+```bash
+nix-app-center-cli search gimp       # list matching packages
+nix-app-center-cli run vlc           # try an app
+nix-app-center-cli keep vlc          # add it to your configuration
+nix-app-center-cli apply             # apply the configuration
+nix-app-center-cli updates           # nixpkgs pin against its branch head
+nix-app-center-cli versions vlc      # versions nixpkgs shipped
+nix-app-center-cli layout --verify   # what Nix App Center detects (read only)
+```
+
+nix-app-center-cli without arguments lists every command.
+NIX_APP_CENTER_CONFIG_DIR points Nix App Center to another NixOS configuration
+folder, for example a copy to experiment safely.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) to set up the project, and
+[docs/](docs/README.md) for how it works.
+
+# Community
+
+For bugs, feature requests, and contributions, please use the [Issue Tracker](https://github.com/SPTApyo/nix-app-center/issues).
+
+Made with ❤️ by [SPTApyo](https://github.com/SPTApyo).
+
+# License
+
+This software is distributed under the **GNU GPL-3.0-or-later**. See [LICENSE](LICENSE) for details.
+
+Copyright (c) 2026 SPTApyo
+
+The app icon combines two artworks:
+
+- the bag from [GNOME Software](https://gitlab.gnome.org/GNOME/gnome-software), GPL-2.0-or-later, by the GNOME Software authors;
+- the snowflake from [NixOS artwork](https://github.com/NixOS/nixos-artwork), [CC-BY-4.0](https://creativecommons.org/licenses/by/4.0/), by the NixOS project.

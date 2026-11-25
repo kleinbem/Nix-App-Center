@@ -1,0 +1,160 @@
+//! Maps nixpkgs attributes to AppStream app ids through curated overlays:
+//! the user's local fixes first, then the community list shipped in the binary.
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
+const COMMUNITY_OVERLAY: &str = include_str!("data/app_mapping.json");
+
+/// Overlay file format: the mappings and a note.
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct Overlay {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    note: Option<String>,
+    #[serde(default)]
+    mappings: HashMap<String, String>,
+}
+
+fn community() -> &'static HashMap<String, String> {
+    static M: OnceLock<HashMap<String, String>> = OnceLock::new();
+    M.get_or_init(|| {
+        serde_json::from_str::<Overlay>(COMMUNITY_OVERLAY)
+            .map(|o| o.mappings)
+            .unwrap_or_default()
+    })
+}
+
+/// Path of the user's local overlay.
+pub(crate) fn user_overlay_path() -> PathBuf {
+    crate::paths::data_dir().join("app-mapping.json")
+}
+
+fn user_overlay() -> Overlay {
+    std::fs::read(user_overlay_path())
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// The app id the overlays give `attr`, `None` when unknown.
+pub fn resolve_app_id(attr: &str) -> Option<String> {
+    let mut user = user_overlay();
+    if let Some(id) = user.mappings.remove(attr) {
+        return Some(id); // the local fix always wins
+    }
+    community().get(attr).cloned()
+}
+
+/// True when the user marked `attr` as matching no Flathub app.
+pub(crate) fn is_unmatched(attr: &str) -> bool {
+    resolve_app_id(attr).is_some_and(|id| id.is_empty())
+}
+
+/// The attr the overlays map to `app_id`.
+pub(crate) fn attr_for_app_id(app_id: &str) -> Option<String> {
+    let find = |m: &HashMap<String, String>| {
+        m.iter()
+            .find(|(_, id)| id.eq_ignore_ascii_case(app_id))
+            .map(|(attr, _)| attr.clone())
+    };
+    find(&user_overlay().mappings).or_else(|| find(community()))
+}
+
+/// Saves a local mapping fix in the user overlay.
+pub fn report_mapping(attr: &str, app_id: &str) -> std::io::Result<()> {
+    let mut o = user_overlay();
+    o.mappings.insert(attr.to_string(), app_id.to_string());
+    let json = serde_json::to_vec_pretty(&o).map_err(std::io::Error::other)?;
+    crate::paths::write_atomic(&user_overlay_path(), &json)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_mapping_marks_a_package_unmatched() {
+        let _g = crate::env_lock();
+        let dir =
+            std::env::temp_dir().join(format!("nix-app-center-resolve-u-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var("XDG_DATA_HOME", &dir);
+        assert!(!is_unmatched("zoom"));
+        report_mapping("zoom", "").unwrap();
+        assert!(is_unmatched("zoom"));
+        std::env::remove_var("XDG_DATA_HOME");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn community_overlay_covers_known_gaps() {
+        let _g = crate::env_lock();
+        let dir =
+            std::env::temp_dir().join(format!("nix-app-center-resolve-c-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var("XDG_DATA_HOME", &dir); // empty user overlay, falls back on community
+
+        assert_eq!(
+            resolve_app_id("firefox").as_deref(),
+            Some("org.mozilla.firefox")
+        );
+        assert_eq!(
+            resolve_app_id("discord").as_deref(),
+            Some("com.discordapp.Discord")
+        );
+        // gimp is the app, not an add-on.
+        assert_eq!(resolve_app_id("gimp").as_deref(), Some("org.gimp.GIMP"));
+        assert_eq!(resolve_app_id("attr-inexistant-xyz"), None);
+
+        std::env::remove_var("XDG_DATA_HOME");
+    }
+
+    #[test]
+    fn user_overlay_takes_precedence_and_report_persists() {
+        let _g = crate::env_lock();
+        let dir =
+            std::env::temp_dir().join(format!("nix-app-center-resolve-u-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var("XDG_DATA_HOME", &dir);
+
+        assert_eq!(resolve_app_id("my-own-app"), None);
+
+        // A reported mapping persists.
+        report_mapping("my-own-app", "com.example.MyApp").unwrap();
+        assert_eq!(
+            resolve_app_id("my-own-app").as_deref(),
+            Some("com.example.MyApp")
+        );
+
+        // And it wins over the community overlay.
+        report_mapping("firefox", "org.mozilla.firefox.custom").unwrap();
+        assert_eq!(
+            resolve_app_id("firefox").as_deref(),
+            Some("org.mozilla.firefox.custom")
+        );
+
+        std::env::remove_var("XDG_DATA_HOME");
+    }
+
+    #[test]
+    fn attr_for_app_id_inverts_the_overlay() {
+        let _g = crate::env_lock();
+        let dir =
+            std::env::temp_dir().join(format!("nix-app-center-resolve-r-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var("XDG_DATA_HOME", &dir);
+
+        assert_eq!(
+            attr_for_app_id("com.visualstudio.code").as_deref(),
+            Some("vscode")
+        );
+        assert_eq!(
+            attr_for_app_id("COM.VISUALSTUDIO.CODE").as_deref(),
+            Some("vscode")
+        );
+        assert_eq!(attr_for_app_id("org.example.Unknown"), None);
+
+        std::env::remove_var("XDG_DATA_HOME");
+    }
+}
