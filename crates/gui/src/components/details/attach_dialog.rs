@@ -1,0 +1,135 @@
+//! The attach dialog: shows the exact diff to the user's file and writes
+//! only on approval; "Do It Myself" copies the lines instead.
+
+use crate::i18n::t;
+use adw::prelude::*;
+use nix_app_center_core::AttachPlan;
+
+fn code_block(text: &str) -> gtk::ScrolledWindow {
+    let view = gtk::TextView::new();
+    view.set_editable(false);
+    view.set_monospace(true);
+    view.set_top_margin(8);
+    view.set_bottom_margin(8);
+    view.set_left_margin(8);
+    view.set_right_margin(8);
+    view.buffer().set_text(text);
+
+    let scroller = gtk::ScrolledWindow::new();
+    scroller.set_child(Some(&view));
+    scroller.set_vexpand(true);
+    scroller.add_css_class("card");
+    scroller
+}
+
+/// Offers the attach; `on_attached` runs once accepted and written.
+pub fn present(
+    parent: &impl IsA<gtk::Widget>,
+    plan: AttachPlan,
+    on_attached: impl Fn(Result<(), String>) + 'static,
+) {
+    let (explanation, body, can_patch) = match &plan {
+        AttachPlan::Patch {
+            site, backup, diff, ..
+        } => (
+            t(
+                "Nix App Center wrote its own files, but nothing imports them yet, so your kept \
+               apps have no real effect.\n\n\
+               To fix this, Nix App Center needs to add the lines below to\n{site}\n\
+               A backup will be written to\n{backup}\n\n\
+               This is the only change Nix App Center will ever make to your files.",
+            )
+            .replace("{site}", &site.display().to_string())
+            .replace("{backup}", &backup.display().to_string()),
+            diff.clone(),
+            true,
+        ),
+        AttachPlan::Manual { site, snippet } => (
+            t(
+                "Nix App Center cannot find a top-level “imports” list in\n{site}\n\n\
+               It will not guess where to write in your file. Add these lines \
+               yourself, wherever you see fit.",
+            )
+            .replace("{site}", &site.display().to_string()),
+            snippet.clone(),
+            false,
+        ),
+        AttachPlan::AlreadyAttached => (
+            t("Nix App Center is already connected to your configuration. Nothing to do."),
+            String::new(),
+            false,
+        ),
+        AttachPlan::NoLayout => (
+            t(
+                "Nix App Center cannot find your Nix configuration (neither /etc/nixos nor \
+               ~/.config/home-manager). It will not guess: your apps stay in the \
+               manifest, but no file is generated.",
+            ),
+            String::new(),
+            false,
+        ),
+    };
+
+    let label = gtk::Label::new(Some(&explanation));
+    label.set_xalign(0.0);
+    label.set_wrap(true);
+    label.set_selectable(true);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+    content.append(&label);
+    if !body.is_empty() {
+        content.append(&code_block(&body));
+    }
+
+    let header = adw::HeaderBar::new();
+    let dialog = adw::Dialog::new();
+    dialog.set_title(&t("Connect Nix App Center to Your Configuration"));
+    dialog.set_content_width(760);
+    dialog.set_content_height(560);
+
+    let close = gtk::Button::with_mnemonic(&if can_patch {
+        t("_Do It Myself")
+    } else {
+        t("_Close")
+    });
+    close.set_tooltip_text(Some(&t(
+        "Copy the lines to paste yourself, and change nothing.",
+    )));
+    header.pack_start(&close);
+    {
+        let dialog = dialog.clone();
+        let body = body.clone();
+        close.connect_clicked(move |_| {
+            if !body.is_empty() {
+                crate::util::copy_to_clipboard(&body);
+            }
+            dialog.close();
+        });
+    }
+
+    if can_patch {
+        let accept = gtk::Button::with_mnemonic(&t("_Add Import Line"));
+        accept.add_css_class("suggested-action");
+        accept.set_tooltip_text(Some(&t(
+            "Add these lines to your file. A backup is written first.",
+        )));
+        header.pack_end(&accept);
+
+        let dialog2 = dialog.clone();
+        accept.connect_clicked(move |_| {
+            let res = nix_app_center_core::attach_commit(&plan).map_err(|e| e.to_string());
+            on_attached(res);
+            dialog2.close();
+        });
+    }
+
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&header);
+    toolbar.set_content(Some(&content));
+    dialog.set_child(Some(&toolbar));
+    dialog.present(Some(parent));
+}
