@@ -1,0 +1,865 @@
+//! Updates tab: the pinned nixpkgs, its branch head, the apps that change,
+//! and the update. Checks at most every ten minutes.
+
+use std::time::{Duration, Instant};
+
+use adw::prelude::*;
+use nix_app_center_core::{AppUpdate, Latest, Source, UpdateMethod};
+use relm4::prelude::*;
+
+use crate::i18n::t;
+use crate::util::{self, esc};
+
+const RECHECK_AFTER: Duration = Duration::from_secs(600);
+
+#[derive(Debug, Clone)]
+pub struct Check {
+    source: Source,
+    latest: Option<Latest>,
+    apps: Vec<AppUpdate>,
+    command: Option<Vec<Vec<String>>>,
+    new_release: Option<String>,
+    /// The other inputs of the configuration's flakes, with their head.
+    inputs: Vec<(nix_app_center_core::FlakeInput, Option<Latest>)>,
+    /// Home Manager follows another release than nixpkgs.
+    mismatch: Option<(String, String)>,
+}
+
+impl Check {
+    /// True when nothing would change; for a profile, when no app changes.
+    fn up_to_date(&self, latest: &Latest) -> bool {
+        match self.source.method {
+            UpdateMethod::Profile => self.apps.is_empty(),
+            _ => self.source.rev.as_deref() == Some(latest.rev.as_str()),
+        }
+    }
+
+    /// Tab badge count; 0 when up to date.
+    fn pending(&self) -> usize {
+        match &self.latest {
+            Some(l) if !self.up_to_date(l) => self.apps.len().max(1),
+            _ => 0,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum UpdatesOutput {
+    /// Updates pending after a check; `notify` for background checks.
+    Pending { count: usize, notify: bool },
+}
+
+pub struct UpdatesModel {
+    check: Option<Check>,
+    checked_at: Option<Instant>,
+    checking: bool,
+    background: bool,
+    updating: bool,
+    status: Option<String>,
+    content: gtk::Box,
+}
+
+#[derive(Debug)]
+pub enum UpdatesMsg {
+    /// Tab entered: checks again when the last check is old.
+    Reload,
+    /// "Check Again".
+    Refresh,
+    /// Daily check; notifies when updates are pending.
+    Background,
+    Checked(Box<Check>),
+    Update,
+    Updated(Result<nix_app_center_core::ApplyOutcome, String>),
+    /// Releases the hold of an attr.
+    Release(String),
+    /// Updates these flake inputs, then applies.
+    UpdateInputs(Vec<nix_app_center_core::FlakeInput>),
+    /// Goes back to an earlier generation.
+    GoBack(nix_app_center_core::HistoryPoint),
+    /// Went back, with the message to show.
+    WentBack(String),
+    /// Asks to move the configuration to this NixOS release.
+    SwitchRelease(String),
+    ReleasePlanned(Option<Box<nix_app_center_core::ReleasePlan>>),
+    /// The user approved the plan.
+    RunRelease(Box<nix_app_center_core::ReleasePlan>),
+    ReleaseDone(
+        Box<nix_app_center_core::ReleasePlan>,
+        Result<nix_app_center_core::ApplyOutcome, String>,
+    ),
+}
+
+#[relm4::component(pub)]
+impl SimpleComponent for UpdatesModel {
+    type Init = ();
+    type Input = UpdatesMsg;
+    type Output = UpdatesOutput;
+
+    view! {
+        #[root]
+        gtk::ScrolledWindow {
+            set_hscrollbar_policy: gtk::PolicyType::Never,
+            set_vexpand: true,
+            #[name(clamp)]
+            adw::Clamp {
+                set_maximum_size: 860,
+                set_tightening_threshold: 576,
+                set_margin_top: 24,
+                set_margin_bottom: 24,
+                set_margin_start: 12,
+                set_margin_end: 12,
+            }
+        }
+    }
+
+    fn init(
+        _: Self::Init,
+        root: Self::Root,
+        sender: ComponentSender<Self>,
+    ) -> ComponentParts<Self> {
+        let content = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(18)
+            .vexpand(true)
+            .build();
+        let model = UpdatesModel {
+            check: None,
+            checked_at: None,
+            checking: false,
+            background: false,
+            updating: false,
+            status: None,
+            content: content.clone(),
+        };
+        let widgets = view_output!();
+        widgets.clamp.set_child(Some(&content));
+        model.rebuild(&sender);
+        ComponentParts { model, widgets }
+    }
+
+    fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
+        match msg {
+            UpdatesMsg::Reload => {
+                if self
+                    .checked_at
+                    .is_none_or(|at| at.elapsed() > RECHECK_AFTER)
+                {
+                    sender.input(UpdatesMsg::Refresh);
+                } else {
+                    self.content.add_css_class("settled");
+                    self.rebuild(&sender);
+                }
+            }
+            UpdatesMsg::Refresh => {
+                if self.checking {
+                    return;
+                }
+                self.checking = true;
+                self.rebuild(&sender);
+                let s = sender.input_sender().clone();
+                std::thread::spawn(move || {
+                    let _ = s.send(UpdatesMsg::Checked(Box::new(check())));
+                });
+            }
+            UpdatesMsg::Background => {
+                self.background = true;
+                sender.input(UpdatesMsg::Refresh);
+            }
+            UpdatesMsg::Checked(c) => {
+                if self.checked_at.is_some() {
+                    self.content.add_css_class("settled");
+                }
+                self.checking = false;
+                self.checked_at = Some(Instant::now());
+                let notify = std::mem::take(&mut self.background);
+                let _ = sender.output(UpdatesOutput::Pending {
+                    count: c.pending(),
+                    notify,
+                });
+                self.check = Some(*c);
+                self.rebuild(&sender);
+            }
+            UpdatesMsg::Update => {
+                let Some(argv) = self.check.as_ref().and_then(|c| c.command.clone()) else {
+                    return;
+                };
+                if self.updating {
+                    return;
+                }
+                self.updating = true;
+                self.rebuild(&sender);
+                let s = sender.input_sender().clone();
+                crate::components::apply_dialog::present(
+                    &self.content,
+                    &t("Updating"),
+                    argv,
+                    move |res| {
+                        let _ = s.send(UpdatesMsg::Updated(res));
+                    },
+                );
+            }
+            UpdatesMsg::UpdateInputs(inputs) => {
+                let layout = nix_app_center_core::detect_layout();
+                let Some(steps) = nix_app_center_core::inputs_update_command(&inputs, &layout)
+                else {
+                    return;
+                };
+                if self.updating {
+                    return;
+                }
+                self.updating = true;
+                self.rebuild(&sender);
+                let s = sender.input_sender().clone();
+                crate::components::apply_dialog::present(
+                    &self.content,
+                    &t("Updating"),
+                    steps,
+                    move |res| {
+                        let _ = s.send(UpdatesMsg::Updated(res));
+                    },
+                );
+            }
+            UpdatesMsg::SwitchRelease(release) => {
+                let s = sender.input_sender().clone();
+                std::thread::spawn(move || {
+                    let plan = nix_app_center_core::release_plan(&release).map(Box::new);
+                    let _ = s.send(UpdatesMsg::ReleasePlanned(plan));
+                });
+            }
+            UpdatesMsg::ReleasePlanned(None) => {
+                self.status = Some(t(
+                    "Nix App Center cannot change the release of this configuration. Switch it in your flake.nix or channel.",
+                ));
+                self.rebuild(&sender);
+            }
+            UpdatesMsg::ReleasePlanned(Some(plan)) => {
+                let s = sender.input_sender().clone();
+                release_dialog(&self.content, *plan, move |plan| {
+                    let _ = s.send(UpdatesMsg::RunRelease(Box::new(plan)));
+                });
+            }
+            UpdatesMsg::RunRelease(plan) => {
+                if let Some(edit) = &plan.edit {
+                    if let Err(e) = nix_app_center_core::write_release_edit(edit) {
+                        self.status = Some(util::failed(&e));
+                        self.rebuild(&sender);
+                        return;
+                    }
+                }
+                self.updating = true;
+                self.rebuild(&sender);
+                let s = sender.input_sender().clone();
+                let steps = plan.steps.clone();
+                crate::components::apply_dialog::present(
+                    &self.content,
+                    &t("Switching to NixOS {}").replace("{}", &plan.release),
+                    steps,
+                    move |res| {
+                        let _ = s.send(UpdatesMsg::ReleaseDone(plan.clone(), res));
+                    },
+                );
+            }
+            UpdatesMsg::ReleaseDone(plan, res) => {
+                self.updating = false;
+                let switched = matches!(res, Ok(nix_app_center_core::ApplyOutcome::Done(_)));
+                self.status = Some(if switched {
+                    t("Your configuration now follows NixOS {}.").replace("{}", &plan.release)
+                } else {
+                    // Nothing switched: the configuration stays on its release.
+                    match plan
+                        .edit
+                        .as_ref()
+                        .map(nix_app_center_core::revert_release_edit)
+                    {
+                        Some(Err(e)) => util::failed(&e),
+                        Some(Ok(())) => format!(
+                            "{} {}",
+                            util::describe_apply(res),
+                            t("flake.nix and flake.lock are back as they were.")
+                        ),
+                        None => util::describe_apply(res),
+                    }
+                });
+                self.checked_at = None;
+                sender.input(UpdatesMsg::Refresh);
+            }
+            UpdatesMsg::Release(attr) => {
+                let pkg = nix_app_center_core::Package::from_attr(attr);
+                self.status = Some(match nix_app_center_core::set_pin(&pkg, None) {
+                    Ok(()) => t("Released. Update or apply your configuration to move it forward."),
+                    Err(e) => util::failed(&e),
+                });
+                sender.input(UpdatesMsg::Refresh);
+            }
+            UpdatesMsg::GoBack(point) => {
+                let s = sender.input_sender().clone();
+                crate::components::go_back::confirm(&self.content, point, move |message| {
+                    let _ = s.send(UpdatesMsg::WentBack(message));
+                });
+            }
+            UpdatesMsg::WentBack(message) => {
+                self.status = Some(message);
+                self.checked_at = None;
+                sender.input(UpdatesMsg::Refresh);
+            }
+            UpdatesMsg::Updated(res) => {
+                self.updating = false;
+                let ok = res.is_ok();
+                self.status = Some(util::describe_apply(res));
+                self.checked_at = None;
+                self.rebuild(&sender);
+                if ok {
+                    sender.input(UpdatesMsg::Refresh);
+                }
+            }
+        }
+    }
+}
+
+/// Reads the pin, the branch head and the app changes. Blocking.
+fn check() -> Check {
+    let source = nix_app_center_core::current_source();
+    let latest = source
+        .branch
+        .as_deref()
+        .and_then(nix_app_center_core::latest);
+    let apps = match &latest {
+        Some(l) if source.rev.as_deref() != Some(l.rev.as_str()) => {
+            nix_app_center_core::app_updates(
+                &l.rev,
+                source.rev.as_deref(),
+                &nix_app_center_core::updatable_apps(&source),
+            )
+        }
+        _ => Vec::new(),
+    };
+    let command =
+        nix_app_center_core::update_command(&source, &nix_app_center_core::detect_layout());
+    let new_release = source
+        .branch
+        .as_deref()
+        .and_then(nix_app_center_core::newer_release);
+    let inputs = nix_app_center_core::flake_inputs(&source);
+    let mismatch = nix_app_center_core::release_mismatch(&source, &inputs);
+    // A few fetches at a time: each one may download its source.
+    let inputs = inputs
+        .chunks(4)
+        .flat_map(|chunk| {
+            let handles: Vec<_> = chunk
+                .iter()
+                .cloned()
+                .map(|i| {
+                    std::thread::spawn(move || {
+                        let latest = nix_app_center_core::input_latest(&i);
+                        (i, latest)
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .filter_map(|h| h.join().ok())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    Check {
+        source,
+        latest,
+        apps,
+        command,
+        new_release,
+        inputs,
+        mismatch,
+    }
+}
+
+/// Held apps, with their installed copy when found.
+fn held_apps() -> Vec<(
+    nix_app_center_core::KeptEntry,
+    Option<nix_app_center_core::ProfileApp>,
+)> {
+    let profile = nix_app_center_core::profile_apps();
+    nix_app_center_core::load_manifest()
+        .kept
+        .into_iter()
+        .filter(|e| e.pin.is_some())
+        .map(|e| {
+            let pname = e.package.attr.rsplit('.').next().unwrap_or(&e.package.attr);
+            let app = profile.iter().find(|a| a.pname == pname).cloned();
+            (e, app)
+        })
+        .collect()
+}
+
+fn short(rev: &str) -> &str {
+    rev.get(..7).unwrap_or(rev)
+}
+
+fn revision_line(rev: Option<&str>, ts: Option<u64>) -> String {
+    match (rev, ts) {
+        (Some(r), Some(ts)) => t("Revision {rev}, {age}")
+            .replace("{rev}", short(r))
+            .replace("{age}", &util::format_relative(ts as i64).to_lowercase()),
+        (Some(r), None) => t("Revision {rev}").replace("{rev}", short(r)),
+        _ => t("Revision unknown"),
+    }
+}
+
+impl UpdatesModel {
+    fn rebuild(&self, sender: &ComponentSender<Self>) {
+        while let Some(child) = self.content.first_child() {
+            self.content.remove(&child);
+        }
+        self.rebuild_updates(sender);
+        if let Some(c) = self.check.as_ref().filter(|_| !self.checking) {
+            if let Some(section) = inputs_section(c, self.updating, sender) {
+                self.content.append(&section);
+            }
+        }
+        if !self.checking {
+            if let Some(history) = history_section(sender) {
+                self.content.append(&history);
+            }
+        }
+    }
+
+    fn rebuild_updates(&self, sender: &ComponentSender<Self>) {
+        if let Some(status) = &self.status {
+            self.content.append(&util::dim_label(status));
+        }
+        let Some(c) = self.check.as_ref().filter(|_| !self.checking) else {
+            self.content
+                .append(&util::dim_label(&t("Checking for updates…")));
+            self.content.append(&util::skeleton_list(3));
+            return;
+        };
+
+        if let Some(release) = &c.new_release {
+            self.content.append(&release_banner(release, sender));
+        }
+        self.content.append(&self.source_list(c, sender));
+        let held = held_apps();
+        if !held.is_empty() {
+            self.content.append(&held_list(&held, sender));
+        }
+
+        let Some(latest) = &c.latest else {
+            let text = if c.source.branch.is_none() {
+                t("Nix App Center cannot tell which nixpkgs branch your configuration follows.")
+            } else {
+                t("Nix App Center could not reach nixpkgs to check for updates.")
+            };
+            self.content.append(&util::dim_label(&text));
+            return;
+        };
+        if c.up_to_date(latest) {
+            self.content.append(&up_to_date_view());
+            return;
+        }
+
+        self.content.append(&self.header(c, latest, sender));
+        if let Some(note) = method_note(&c.source.method).filter(|_| c.command.is_none()) {
+            self.content.append(&util::dim_label(&note));
+        }
+        if !c.apps.is_empty() {
+            let list = util::boxed_list();
+            for u in &c.apps {
+                let change = format!("{} → {}", u.app.version, u.new_version);
+                let row = util::desktop_row(&u.app.desktop_file, &change).unwrap_or_else(|| {
+                    adw::ActionRow::builder()
+                        .title(esc(&u.app.pname))
+                        .subtitle(esc(&change))
+                        .build()
+                });
+                list.append(&row);
+            }
+            self.content.append(&list);
+            self.content.append(&util::dim_label(&t(
+                "Apps update together: they all come from the same nixpkgs revision. To keep one app as it is, hold its version from its page.",
+            )));
+        }
+    }
+
+    fn source_list(&self, c: &Check, sender: &ComponentSender<Self>) -> gtk::ListBox {
+        let row = adw::ActionRow::builder()
+            .title(esc(&match &c.source.branch {
+                Some(b) => t("nixpkgs {}").replace("{}", b),
+                None => "nixpkgs".to_string(),
+            }))
+            .subtitle(esc(&if c.source.method == UpdateMethod::Profile {
+                t("Apps in your user profile, updated with nix profile")
+            } else {
+                t("Installed: {}").replace(
+                    "{}",
+                    &revision_line(c.source.rev.as_deref(), c.source.last_modified),
+                )
+            }))
+            .build();
+        row.add_prefix(&gtk::Image::from_icon_name("nix-snowflake-symbolic"));
+        let again = gtk::Button::from_icon_name("view-refresh-symbolic");
+        again.set_tooltip_text(Some(&t("Check Again")));
+        again.add_css_class("flat");
+        again.set_valign(gtk::Align::Center);
+        again.connect_clicked({
+            let s = sender.input_sender().clone();
+            move |_| {
+                let _ = s.send(UpdatesMsg::Refresh);
+            }
+        });
+        row.add_suffix(&again);
+        let list = util::boxed_list();
+        list.append(&row);
+        list
+    }
+
+    fn header(&self, c: &Check, latest: &Latest, sender: &ComponentSender<Self>) -> gtk::Box {
+        let n = c.apps.len() as i64;
+        let title = gtk::Label::new(Some(&if n > 0 {
+            util::plural("{} app update", "{} app updates", n)
+        } else {
+            t("New nixpkgs revision")
+        }));
+        title.add_css_class("title-2");
+        title.set_xalign(0.0);
+        let sub = util::dim_label(&t("Available: {}").replace(
+            "{}",
+            &revision_line(Some(&latest.rev), Some(latest.last_modified)),
+        ));
+        let titles = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        titles.set_hexpand(true);
+        titles.append(&title);
+        titles.append(&sub);
+
+        let hb = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        hb.append(&titles);
+        if c.command.is_some() {
+            let btn = gtk::Button::with_mnemonic(&t("_Update"));
+            btn.add_css_class("suggested-action");
+            btn.set_valign(gtk::Align::Center);
+            btn.set_sensitive(!self.updating);
+            btn.set_tooltip_text(
+                c.command
+                    .as_ref()
+                    .map(|steps| {
+                        steps
+                            .iter()
+                            .map(|a| a.join(" "))
+                            .collect::<Vec<_>>()
+                            .join(" && ")
+                    })
+                    .as_deref(),
+            );
+            btn.connect_clicked({
+                let s = sender.input_sender().clone();
+                move |_| {
+                    let _ = s.send(UpdatesMsg::Update);
+                }
+            });
+            crate::components::apply_dialog::guard(&btn);
+            hb.append(&btn);
+        }
+        hb
+    }
+}
+
+/// The held apps, each with a Release button.
+/// The other inputs of the configuration's flakes: which moved, and the
+/// buttons updating them.
+fn inputs_section(
+    c: &Check,
+    updating: bool,
+    sender: &ComponentSender<UpdatesModel>,
+) -> Option<gtk::Box> {
+    if c.inputs.is_empty() {
+        return None;
+    }
+    let section = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let heading = gtk::Label::new(Some(&t("Other Sources")));
+    heading.add_css_class("heading");
+    heading.set_xalign(0.0);
+    heading.set_hexpand(true);
+    header.append(&heading);
+    let newer: Vec<nix_app_center_core::FlakeInput> = c
+        .inputs
+        .iter()
+        .filter(|(i, l)| {
+            l.as_ref()
+                .is_some_and(|l| i.rev.as_deref() != Some(l.rev.as_str()))
+        })
+        .map(|(i, _)| i.clone())
+        .collect();
+    if newer.len() > 1 {
+        let all = gtk::Button::with_mnemonic(&t("Update _All"));
+        all.set_sensitive(!updating);
+        let s = sender.input_sender().clone();
+        let newer = newer.clone();
+        all.connect_clicked(move |_| {
+            let _ = s.send(UpdatesMsg::UpdateInputs(newer.clone()));
+        });
+        header.append(&all);
+    }
+    section.append(&header);
+    section.append(&util::dim_label(&t(
+        "The flakes your configuration uses besides nixpkgs: modules, themes, apps from other sources.",
+    )));
+    if let Some((hm, nixpkgs)) = &c.mismatch {
+        let warning = util::dim_label(
+            &t("Home Manager follows {hm} while nixpkgs follows {nixpkgs}: Home Manager may warn or break. Change its branch in your flake.nix.")
+                .replace("{hm}", hm)
+                .replace("{nixpkgs}", nixpkgs),
+        );
+        warning.add_css_class("warning");
+        section.append(&warning);
+    }
+    let list = util::boxed_list();
+    for (input, latest) in &c.inputs {
+        let age = |ts: Option<u64>| {
+            ts.map(|t| util::format_relative(t as i64).to_lowercase())
+                .unwrap_or_default()
+        };
+        let subtitle = match latest {
+            None => t("Could not check"),
+            Some(l) if input.rev.as_deref() == Some(l.rev.as_str()) => {
+                t("Up to date, from {}").replace("{}", &age(input.last_modified))
+            }
+            Some(l) => t("New version from {new}, yours is from {old}")
+                .replace("{new}", &age(Some(l.last_modified)))
+                .replace("{old}", &age(input.last_modified)),
+        };
+        let row = adw::ActionRow::builder()
+            .title(esc(&input.name))
+            .subtitle(esc(&format!("{} · {subtitle}", input.reference)))
+            .build();
+        if newer.contains(input) {
+            let update = gtk::Button::with_mnemonic(&t("_Update"));
+            update.set_valign(gtk::Align::Center);
+            update.set_sensitive(!updating);
+            let s = sender.input_sender().clone();
+            let input = input.clone();
+            update.connect_clicked(move |_| {
+                let _ = s.send(UpdatesMsg::UpdateInputs(vec![input.clone()]));
+            });
+            row.add_suffix(&update);
+        }
+        list.append(&row);
+    }
+    section.append(&list);
+    Some(section)
+}
+
+/// How many earlier versions the history lists.
+const HISTORY_ROWS: usize = 12;
+
+/// Earlier generations to go back to, with what changed in each.
+fn history_section(sender: &ComponentSender<UpdatesModel>) -> Option<gtk::Box> {
+    let points = nix_app_center_core::history();
+    if points.len() < 2 {
+        return None;
+    }
+    let list = util::boxed_list();
+    for (i, p) in points.iter().take(HISTORY_ROWS).enumerate() {
+        let older = points.get(i + 1);
+        let row = adw::ActionRow::builder()
+            .title(esc(&crate::components::go_back::when(p)))
+            .subtitle(esc(&history_line(p, older)))
+            .build();
+        if p.current {
+            let tag = util::dim_label(&t("Current"));
+            row.add_suffix(&tag);
+        } else {
+            if p.booted {
+                row.add_suffix(&util::dim_label(&t("Started at boot")));
+            }
+            let back = gtk::Button::with_mnemonic(&t("Go _Back"));
+            back.set_valign(gtk::Align::Center);
+            let s = sender.input_sender().clone();
+            let point = p.clone();
+            back.connect_clicked(move |_| {
+                let _ = s.send(UpdatesMsg::GoBack(point.clone()));
+            });
+            crate::components::apply_dialog::guard(&back);
+            row.add_suffix(&back);
+        }
+        list.append(&row);
+    }
+    let section = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    let heading = gtk::Label::new(Some(&t("History")));
+    heading.add_css_class("heading");
+    heading.set_xalign(0.0);
+    section.append(&heading);
+    section.append(&util::dim_label(&t(
+        "Each apply keeps the version before it. Go back to one if something broke; cleaning old generations in Storage removes them from here.",
+    )));
+    section.append(&list);
+    Some(section)
+}
+
+/// "Added steam · Removed vlc", what Nix App Center changed in `p`.
+fn history_line(
+    p: &nix_app_center_core::HistoryPoint,
+    older: Option<&nix_app_center_core::HistoryPoint>,
+) -> String {
+    let mut parts = Vec::new();
+    match (&p.kept, older.and_then(|o| o.kept.as_ref())) {
+        (Some(now), Some(before)) => {
+            let (added, removed) = nix_app_center_core::kept_diff(before, now);
+            if !added.is_empty() {
+                parts.push(t("Added {}").replace("{}", &added.join(", ")));
+            }
+            if !removed.is_empty() {
+                parts.push(t("Removed {}").replace("{}", &removed.join(", ")));
+            }
+            if parts.is_empty() {
+                parts.push(t("Same apps, updated or reconfigured"));
+            }
+        }
+        (Some(_), None) => parts.push(t("Applied with Nix App Center")),
+        (None, _) => parts.push(t("Applied outside Nix App Center")),
+    }
+    if let Some(v) = &p.version {
+        parts.push(format!("NixOS {v}"));
+    }
+    parts.join(" · ")
+}
+
+fn held_list(
+    held: &[(
+        nix_app_center_core::KeptEntry,
+        Option<nix_app_center_core::ProfileApp>,
+    )],
+    sender: &ComponentSender<UpdatesModel>,
+) -> gtk::Box {
+    let list = util::boxed_list();
+    for (entry, app) in held {
+        let since = entry.pin.as_ref().map_or(0, |p| p.since);
+        let mut subtitle = t("Held {age}, gets no security updates")
+            .replace("{age}", &util::format_relative(since as i64).to_lowercase());
+        if let Some(app) = app {
+            subtitle = format!("{} · {subtitle}", app.version);
+        }
+        let row = app
+            .as_ref()
+            .and_then(|a| util::desktop_row(&a.desktop_file, &subtitle))
+            .unwrap_or_else(|| {
+                adw::ActionRow::builder()
+                    .title(esc(&entry.package.attr))
+                    .subtitle(esc(&subtitle))
+                    .build()
+            });
+        let release = gtk::Button::with_mnemonic(&t("_Release"));
+        release.set_valign(gtk::Align::Center);
+        release.set_tooltip_text(Some(&t("Let the app follow your configuration again.")));
+        crate::components::apply_dialog::guard(&release);
+        release.connect_clicked({
+            let s = sender.input_sender().clone();
+            let attr = entry.package.attr.clone();
+            move |_| {
+                let _ = s.send(UpdatesMsg::Release(attr.clone()));
+            }
+        });
+        row.add_suffix(&release);
+        list.append(&row);
+    }
+    util::section(&t("Held Apps"), None, &list)
+}
+
+/// Why Nix App Center cannot update by itself.
+fn method_note(method: &UpdateMethod) -> Option<String> {
+    match method {
+        UpdateMethod::Pinned { by } => Some(
+            t("nixpkgs comes from the “{}” input of your configuration. Update that flake, then apply.")
+                .replace("{}", by),
+        ),
+        UpdateMethod::Unknown => Some(t("Nix App Center cannot update this configuration by itself.")),
+        _ => None,
+    }
+}
+
+/// Banner for a newer NixOS release, which the user moves to on purpose.
+fn release_banner(release: &str, sender: &ComponentSender<UpdatesModel>) -> adw::Banner {
+    let banner = adw::Banner::new(&t("NixOS {0} is available.").replace("{0}", release));
+    banner.set_button_label(Some(&t("_Switch to NixOS {0}…").replace("{0}", release)));
+    banner.set_revealed(true);
+    let s = sender.input_sender().clone();
+    let release = release.to_string();
+    banner.connect_button_clicked(move |_| {
+        let _ = s.send(UpdatesMsg::SwitchRelease(release.clone()));
+    });
+    banner
+}
+
+/// Shows what moving to the next release changes; `on_switch` gets the
+/// plan once approved.
+pub(crate) fn release_dialog(
+    parent: &impl IsA<gtk::Widget>,
+    plan: nix_app_center_core::ReleasePlan,
+    on_switch: impl Fn(nix_app_center_core::ReleasePlan) + 'static,
+) {
+    let body = match &plan.edit {
+        Some(edit) => t("Nix App Center changes these lines of {file}, a backup next to it first, then updates the flake and applies. If anything fails or you cancel, flake.nix and flake.lock go back as they were.")
+            .replace("{file}", &edit.file.display().to_string()),
+        None => t("Nix App Center points the nixos channel to the new release, then upgrades and applies. If you added Home Manager as a channel, switch it too."),
+    };
+    let dialog = adw::AlertDialog::new(
+        Some(&t("Switch to NixOS {}?").replace("{}", &plan.release)),
+        Some(&body),
+    );
+    let extra = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    let diff = gtk::Label::new(Some(plan.diff.trim_end()));
+    diff.add_css_class("monospace");
+    diff.add_css_class("caption");
+    diff.set_xalign(0.0);
+    diff.set_margin_top(8);
+    diff.set_margin_bottom(8);
+    diff.set_margin_start(10);
+    diff.set_margin_end(10);
+    diff.set_wrap(true);
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    card.add_css_class("card");
+    card.append(&diff);
+    extra.append(&card);
+    extra.append(&util::dim_label(&t(
+        "system.stateVersion stays as it is: it is not the release you run, never change it to upgrade. Read the release notes first: some options change or go away.",
+    )));
+    let notes = gtk::LinkButton::with_label(
+        "https://nixos.org/manual/nixos/stable/release-notes",
+        &t("Release Notes"),
+    );
+    notes.set_halign(gtk::Align::Start);
+    extra.append(&notes);
+    dialog.set_extra_child(Some(&extra));
+    dialog.add_response("cancel", &t("_Cancel"));
+    dialog.add_response("switch", &t("_Switch"));
+    dialog.set_response_appearance("switch", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    dialog.connect_response(None, move |_, response| {
+        if response == "switch" {
+            on_switch(plan.clone());
+        }
+    });
+    dialog.present(Some(parent));
+}
+/// "Everything is up to date" view.
+fn up_to_date_view() -> gtk::Box {
+    const SVG: &[u8] = include_bytes!("../../data/assets/up-to-date.svg");
+    let pic = gtk::Picture::new();
+    if let Ok(tex) = gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from_static(SVG)) {
+        pic.set_paintable(Some(&tex));
+    }
+    pic.set_size_request(256, 192);
+    pic.add_css_class("icon-dropshadow");
+    let title = gtk::Label::new(Some(&t("Everything is up to date")));
+    title.add_css_class("title-1");
+
+    let b = gtk::Box::builder()
+        .orientation(gtk::Orientation::Vertical)
+        .halign(gtk::Align::Center)
+        .valign(gtk::Align::Center)
+        .vexpand(true)
+        .spacing(18)
+        .build();
+    b.append(&pic);
+    b.append(&title);
+    b
+}
